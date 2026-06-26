@@ -1,0 +1,23 @@
+# ESP32 编译/缓存文件（全部屏蔽不上传）
+build/
+tmp/
+managed_components/
+debug.log
+dependencies.lock
+sdkconfig
+sdkconfig.old
+*.elf *.bin *.map *.obj *.a *.d
+
+# 编辑器、系统缓存
+.vscode/
+.claude
+.clangd
+.idea/
+*.swp
+.DS_Store
+
+# 临时脚本文件
+build_cmd.bat
+tmp_tls_check.py
+*.der
+*.csv
