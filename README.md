@@ -16,6 +16,7 @@
 - 开发框架：ESP-IDF
 
 ## 使用方法
-1. 修改 components/ONENET/onenet.h 内产品、设备、密钥参数；
-2. idf.py build flash monitor 编译烧录程序；
-3. 设备联网后连接云平台，打开配套小程序即可远程计分。
+1. 修改 components/WIFI/my_wifi.h 内wifi名称，wifi密码参数；
+2. 修改 components/ONENET/onenet.h 内产品、设备、密钥参数；
+3. idf.py build flash monitor 编译烧录程序；
+4. 设备联网后连接云平台，打开配套小程序即可远程计分。
