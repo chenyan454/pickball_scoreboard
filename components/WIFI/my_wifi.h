@@ -5,8 +5,8 @@
 
 /*--------------------------- WiFi 配置 ---------------------------*/
 #define DEFAULT_SCAN_LIST_SIZE      12
-#define CONFIG_ESP_WIFI_SSID        "chen40"
-#define CONFIG_ESP_WIFI_PASSWORD    "123456chen"
+#define CONFIG_ESP_WIFI_SSID        "your_wifi_ssid"
+#define CONFIG_ESP_WIFI_PASSWORD    "your_wifi_password"
 
 /*--------------------------- 事件标志位 ---------------------------*/
 #define WIFI_CONNECTED_BIT          BIT0        // 连接成功标志位

@@ -23,16 +23,15 @@ extern "C" {
 #endif
 
 /*--------------------------- Onenet 平台信息 ---------------------------*/
-#define PROID           "97zB3KY04H"
-#define TOKEN           "version=2018-10-31&res=products%2F97zB3KY04H%2Fdevices%2Fwoker1&et=1844918626&method=md5&sign=HfjsSJIsUJRxHsFw%2FTdCuA%3D%3D"
-#define DEVID           "woker1"
+#define PROID           "yourproidInfo"
+#define TOKEN           "yourtokenInfo"
+#define DEVID           "yourdevidInfo"
 //#define URL             "mqtt://mqtts.heclouds.com:1883"
 //尝试使用单向TLS连接云平台
 #define URL             "mqtts://mqttstls.heclouds.com:8883"
 /*--------------------------- Onenet 服务器信息 ---------------------------*/
-//#define ONENET_HOST     "mqtts.heclouds.com"
-//#define ONENET_PORT     1883
-#define COMMON_NAME     "OneNET MQTTS"
+/*onenet云平台根证书CN*/
+#define COMMON_NAME     "CN_name"
 
 /*--------------------------- MQTT 数据事件回调 ---------------------------*/
 /**

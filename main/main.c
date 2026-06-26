@@ -14,8 +14,8 @@
 //将所有信息打包发送给串口屏
 void sendto_TJC();
 
-const char devPubTopic[]="$sys/97zB3KY04H/woker1/thing/property/post";
-const char *devSubTopic[]={"$sys/97zB3KY04H/woker1/thing/property/set"};
+const char devPubTopic[]="$sys/yourproidInfo/yourdevidInfo/thing/property/post";
+const char *devSubTopic[]={"$sys/yourproidInfo/yourdevidInfo/thing/property/set"};
 static const char *TAG = "main";
 
 
