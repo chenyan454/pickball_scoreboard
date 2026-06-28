@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -10,6 +11,11 @@
 #include "my_wifi.h"
 #include "cJSON.h"
 #include "onenet.h"
+
+
+//时间戳同步
+#include <time.h>
+#include "esp_sntp.h"
 
 //将所有信息打包发送给串口屏
 void sendto_TJC();
@@ -56,6 +62,44 @@ static GameBoard PkInfo = {
 	.play_b = {{0}}
  };
 
+// 比赛开始时间（Unix 时间戳，单位：秒），由 OneNet 下发 start_ts
+static volatile time_t g_start_ts = 0;
+
+
+// 周期任务：计算从 g_start_ts 到当前时间流逝并每秒下发到串口屏（格式 MM:SS）
+static void elapsed_timer_task(void *arg)
+{
+    char buf[16];
+    while (1) {
+        time_t now = time(NULL);
+        time_t elapsed = 0;
+
+        // 调试当前时间与开始时间
+        if (g_start_ts == 0) {
+            ESP_LOGI(TAG, "No start_ts set yet. now=%lld", (long long)now);
+        } else if (now > g_start_ts) {
+            elapsed = now - g_start_ts;
+        } else if (now <= g_start_ts) {
+            // 时间戳获取错误或者系统时间戳有误
+            ESP_LOGE(TAG, "get error time!please check again.");
+        }
+
+        int minutes = (int)(elapsed / 60);
+        int seconds = (int)(elapsed % 60);
+
+        snprintf(buf, sizeof(buf), "%02d:%02d", minutes, seconds);
+
+        // 调试输出：显示下发到串口屏的时间数据
+    //    ESP_LOGI(TAG, "Dispatching time -> %s (elapsed=%llds)", buf, (long long)elapsed);
+
+        // 更新本地显示字段并下发给陶晶驰串口屏
+        snprintf(PkInfo.match.time, sizeof(PkInfo.match.time), "%s", buf);
+        TJCPrintf("t10.txt=\"%s\"", PkInfo.match.time);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 void init_all()
 {
    //陶晶驰串口屏通讯
@@ -88,11 +132,12 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
 			cJSON *b_player1_name = cJSON_GetObjectItem(params, "B_name1");
 			cJSON *b_player2_name = cJSON_GetObjectItem(params, "B_name2");
 
-			cJSON *time = cJSON_GetObjectItem(params, "Time");
+			
 			cJSON *date = cJSON_GetObjectItem(params, "date");
 			cJSON *current_set = cJSON_GetObjectItem(params, "number_game");
 			cJSON *serve_team = cJSON_GetObjectItem(params, "serve_team");
 			cJSON *serve_player = cJSON_GetObjectItem(params, "serve_player");
+            cJSON *start_ts_item = cJSON_GetObjectItem(params, "start_ts");
 
             if (cJSON_IsNumber(a_score)) {
                 PkInfo.play_a.score = a_score->valueint;
@@ -114,15 +159,12 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
                 snprintf(PkInfo.play_b.name, sizeof(PkInfo.play_b.name), "%s", b_name->valuestring);
             }
 			if (cJSON_IsString(b_player1_name)) {
-                snprintf(PkInfo.play_b.player1_name, sizeof(PkInfo.play_a.player1_name), "%s", b_player1_name->valuestring);
+                snprintf(PkInfo.play_b.player1_name, sizeof(PkInfo.play_b.player1_name), "%s", b_player1_name->valuestring);
             }
 			if (cJSON_IsString(b_player2_name)) {
-                snprintf(PkInfo.play_b.player2_name, sizeof(PkInfo.play_a.player2_name), "%s", b_player2_name->valuestring);
+                snprintf(PkInfo.play_b.player2_name, sizeof(PkInfo.play_b.player2_name), "%s", b_player2_name->valuestring);
             }
 
-			if (cJSON_IsString(time)) {
-                snprintf(PkInfo.match.time, sizeof(PkInfo.match.time), "%s", time->valuestring);
-            }
 			if (cJSON_IsString(date)) {
                 snprintf(PkInfo.match.date, sizeof(PkInfo.match.date), "%s", date->valuestring);
             }
@@ -134,6 +176,21 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
             }
 			if (cJSON_IsNumber(current_set)) {
                 PkInfo.match.current_set = current_set->valueint;
+            }
+
+            if (start_ts_item) {
+                long long raw_ts = 0;
+                if (cJSON_IsNumber(start_ts_item)) {
+                    raw_ts = (long long)start_ts_item->valuedouble;
+                } 
+
+                if (raw_ts > 1000000000000LL) {
+                    // 13 位毫秒时间戳，转换为秒
+                    g_start_ts = (time_t)(raw_ts / 1000LL);
+                } else {
+                    g_start_ts = (time_t)raw_ts;
+                }
+                ESP_LOGI(TAG, "Received start_ts raw=%lld -> start_ts(s)=%lld", raw_ts, (long long)g_start_ts);
             }
         }
         cJSON_Delete(json);
@@ -151,7 +208,7 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
     // 构建 params 载体（强制回传设备端实际值，云端据此做数值对齐）
     char params_buf[512];
     snprintf(params_buf, sizeof(params_buf),
-             "{\"A_name\":%s,\"A_score\":%d,\"A_name1\":%s,\"A_name2\":%s,\"B_name\":%s,\"B_score\":%d,\"B_name1\":%s,\"B_name2\":%s,},\"Time\":%s,\"date\":%s,\"number_game\":%d,\"serve_team\":%s,\"serve_player\":%d}",
+             "{\"A_name\":%s,\"A_score\":%d,\"A_name1\":%s,\"A_name2\":%s,\"B_name\":%s,\"B_score\":%d,\"B_name1\":%s,\"B_name2\":%s},\"Time\":%s,\"date\":%s,\"number_game\":%d,\"serve_team\":%s,\"serve_player\":%d}",
              PkInfo.play_a.name,PkInfo.play_a.score,PkInfo.play_a.player1_name,PkInfo.play_a.player2_name,
 			 PkInfo.play_b.name,PkInfo.play_b.score,PkInfo.play_b.player1_name,PkInfo.play_b.player2_name,
 			 PkInfo.match.time,PkInfo.match.date,PkInfo.match.current_set,
@@ -206,9 +263,6 @@ void sendto_TJC()
 		TJCPrintf("t6.txt=\"%s\"", PkInfo.play_b.player1_name);
 		TJCPrintf("t7.txt=\"%s\"", PkInfo.play_b.player2_name);
 
-	    TJCPrintf("t10.txt=\"%s\"", PkInfo.match.time);
-
-		TJCPrintf("click m0,1");//发送解析计时器数据指令
 
 		TJCPrintf("t9.txt=\"%s\"", PkInfo.match.date);
 
@@ -243,7 +297,40 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "WiFi connected");
 
-		
+    // ==================== SNTP 时间同步 ====================
+    ESP_LOGI(TAG, "Starting SNTP time sync...");
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "ntp.aliyun.com");
+    esp_sntp_setservername(1, "pool.ntp.org");
+    esp_sntp_init();
+
+    // 等待时间同步完成（最长等待 10 秒，或时间已变为合理值）
+    int sntp_retry = 0;
+    while (++sntp_retry < 100) {
+        if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+            break;
+        }
+        // 即使状态未更新，time(NULL) 可能已经拿到正确时间
+        time_t now = time(NULL);
+        if (now > 1700000000) {  // 2023-11-15 之后，视为已同步
+            ESP_LOGI(TAG, "SNTP time already valid (%lld), breaking early", (long long)now);
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
+        ESP_LOGI(TAG, "SNTP time sync completed");
+    } else {
+        time_t now = time(NULL);
+        if (now > 1700000000) {
+            ESP_LOGI(TAG, "SNTP sync: status not final but time is valid");
+        } else {
+            ESP_LOGW(TAG, "SNTP sync timeout, will rely on tick fallback");
+        }
+    }
+
+    ESP_LOGI(TAG, "Current time after SNTP sync: %lld", (long long)time(NULL));
+
     // ==================== MQTT 连接 OneNET ====================
     ESP_LOGI(TAG, "Connecting to OneNET MQTT...");
     while (OneNet_DevLink() == false) {
@@ -258,6 +345,9 @@ void app_main(void)
     OneNet_SetPropertySetCallback(on_property_set);
 
     ESP_LOGI(TAG, "Onenet connected successfully!");
+
+    // 启动计时器下发任务（每秒更新一次显示）
+    xTaskCreate(elapsed_timer_task, "elapsed_timer", 3072, NULL, 5, NULL);
 
     // ==================== 启动看门狗任务 ====================
     //xTaskCreate(mqtt_watchdog_task, "mqtt_wdog", 3072, NULL, 3, NULL);
