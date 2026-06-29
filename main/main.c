@@ -11,11 +11,12 @@
 #include "my_wifi.h"
 #include "cJSON.h"
 #include "onenet.h"
-
-
+#include "bsp_adc.h"
+#include "my_dac.h"
 //时间戳同步
 #include <time.h>
 #include "esp_sntp.h"
+
 
 //将所有信息打包发送给串口屏
 void sendto_TJC();
@@ -64,6 +65,60 @@ static GameBoard PkInfo = {
 
 // 比赛开始时间（Unix 时间戳，单位：秒），由 OneNet 下发 start_ts
 static volatile time_t g_start_ts = 0;
+
+// 周期任务：启动电压输出
+static void dac_ramp_task(void *arg)
+{
+    // 初始化DAC模块，仅执行一次
+    ESP_ERROR_CHECK(dac_sim_init());
+
+    int32_t volt = DAC_VOLT_MIN_MV;
+    int32_t step = 10; // 每次变化10mV
+    const TickType_t delay_ms = pdMS_TO_TICKS(50);
+
+    int counter = 0;
+    while (1)
+    {
+        // 设置目标输出电压
+        dac_sim_set_voltage(volt);
+        int32_t now_volt = dac_sim_get_voltage();
+
+        // 仅每 1 秒打印一次，避免串口日志洪水导致 monitor 超时
+        if (++counter % 20 == 0) {
+            ESP_LOGI(TAG, "GPIO7 Output Voltage: %4d mV (%.2f V)", (int)now_volt, now_volt / 1000.0f);
+        }
+
+        // 0V ↔ 2.9V往返渐变
+        volt += step;
+        if (volt >= DAC_VOLT_MAX_MV) step = -10;
+        if (volt <= DAC_VOLT_MIN_MV) step = 10;
+
+        vTaskDelay(delay_ms);
+    }
+
+
+}
+
+// 周期任务：每3秒读取电压值（256次爆发采样取平均）并下发到串口屏
+void adc_get_baterry_task(void *arg)
+{
+    // 任务启动前仅初始化一次ADC
+    adc_init();
+	//0-2900mv
+    int volt_mv;
+	int volt_full=2900;
+	int pct=0;
+    while(1)
+    {
+        adc_read_voltage_mv(&volt_mv);
+		pct=(volt_mv*100)/volt_full;
+
+        ESP_LOGI("ADC", "当前电压:%d mV", volt_mv);
+		ESP_LOGI("ADC", "当前电量:%d%%", pct);
+        vTaskDelay(pdMS_TO_TICKS(3000)); // 3秒采集一次
+    }
+}
+
 
 
 // 周期任务：计算从 g_start_ts 到当前时间流逝并每秒下发到串口屏（格式 MM:SS）
@@ -283,10 +338,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // 设置日志级别
+    // 设置日志级别（信息过多时上调各模块最低级别）
     esp_log_level_set("wifi station", CONFIG_LOG_MAXIMUM_LEVEL);
     esp_log_level_set("onenet", CONFIG_LOG_MAXIMUM_LEVEL);
-	esp_log_level_set("my_mqtt", CONFIG_LOG_MAXIMUM_LEVEL);
+    esp_log_level_set("my_mqtt", CONFIG_LOG_MAXIMUM_LEVEL);
+    esp_log_level_set("DAC_MOD", ESP_LOG_WARN);   // DAC 电压渐变信息量过大，仅输出警告
+    esp_log_level_set("ADC", ESP_LOG_INFO);       // ADC 保留 INFO 级别（30s 一次，合理）
 
 
     // ==================== WiFi 连接 ====================
@@ -348,7 +405,12 @@ void app_main(void)
 
     // 启动计时器下发任务（每秒更新一次显示）
     xTaskCreate(elapsed_timer_task, "elapsed_timer", 3072, NULL, 5, NULL);
+	//启动电压输出
+	xTaskCreate(dac_ramp_task, "dac_ramp_task", 3072, NULL, 5, NULL);
+    // 启动电量显示（每30s更新一次）
+	xTaskCreate(adc_get_baterry_task, "adc_task", 3072, NULL, 5, NULL);
 
+	
     // ==================== 启动看门狗任务 ====================
     //xTaskCreate(mqtt_watchdog_task, "mqtt_wdog", 3072, NULL, 3, NULL);
     // ESP_LOGI(TAG, "MQTT watchdog task started");
