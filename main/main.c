@@ -35,6 +35,7 @@ typedef enum{
 typedef struct {
 	int current_set;//当前局数
 	char time[32];//比赛消耗时间
+	char match_status[32];//比赛状态
 	char serve_team[2];//队伍球权
 	serve_player_t serve_player;//球员球权
 	char date[32];//比赛日期 2026-6-1
@@ -112,9 +113,11 @@ void adc_get_baterry_task(void *arg)
     {
         adc_read_voltage_mv(&volt_mv);
 		pct=(volt_mv*100)/volt_full;
-
+		//发送电量信息
+		TJCPrintf("n2.val=%d", pct);
         ESP_LOGI("ADC", "当前电压:%d mV", volt_mv);
 		ESP_LOGI("ADC", "当前电量:%d%%", pct);
+		
         vTaskDelay(pdMS_TO_TICKS(3000)); // 3秒采集一次
     }
 }
@@ -122,19 +125,26 @@ void adc_get_baterry_task(void *arg)
 
 
 // 周期任务：计算从 g_start_ts 到当前时间流逝并每秒下发到串口屏（格式 MM:SS）
+// 仅在 match_status == "进行中" 时计时，否则显示 00:00
 static void elapsed_timer_task(void *arg)
 {
     char buf[16];
+    int tick = 0;
     while (1) {
         time_t now = time(NULL);
         time_t elapsed = 0;
+        bool is_playing = (strcmp(PkInfo.match.match_status, "进行中") == 0);
 
-        // 调试当前时间与开始时间
-        if (g_start_ts == 0) {
-            ESP_LOGI(TAG, "No start_ts set yet. now=%lld", (long long)now);
-        } else if (now > g_start_ts) {
+        if (!is_playing)
+		{
+            // 非比赛状态：不计算时间，保持 00:00
+            elapsed = 0;
+        } 
+		else if (is_playing&&now > g_start_ts)
+		{
+			// 比赛状态：计算时间
             elapsed = now - g_start_ts;
-        } else if (now <= g_start_ts) {
+        } else {
             // 时间戳获取错误或者系统时间戳有误
             ESP_LOGE(TAG, "get error time!please check again.");
         }
@@ -144,8 +154,11 @@ static void elapsed_timer_task(void *arg)
 
         snprintf(buf, sizeof(buf), "%02d:%02d", minutes, seconds);
 
-        // 调试输出：显示下发到串口屏的时间数据
-    //    ESP_LOGI(TAG, "Dispatching time -> %s (elapsed=%llds)", buf, (long long)elapsed);
+        // 调试输出：每 10 秒打印一次（避免串口洪水）
+        if (tick % 10 == 0) {
+            ESP_LOGI(TAG, "Dispatching time -> %s (elapsed=%llds, playing=%d)",
+                     buf, (long long)elapsed, is_playing);
+        }
 
         // 更新本地显示字段并下发给陶晶驰串口屏
         snprintf(PkInfo.match.time, sizeof(PkInfo.match.time), "%s", buf);
@@ -193,6 +206,8 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
 			cJSON *serve_team = cJSON_GetObjectItem(params, "serve_team");
 			cJSON *serve_player = cJSON_GetObjectItem(params, "serve_player");
             cJSON *start_ts_item = cJSON_GetObjectItem(params, "start_ts");
+			cJSON *match_status = cJSON_GetObjectItem(params, "match_status");
+
 
             if (cJSON_IsNumber(a_score)) {
                 PkInfo.play_a.score = a_score->valueint;
@@ -226,6 +241,9 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
 			if (cJSON_IsString(serve_team)) {
                  snprintf(PkInfo.match.serve_team, sizeof(PkInfo.match.serve_team), "%s", serve_team->valuestring);
             }
+			if (cJSON_IsString(match_status)) {
+                 snprintf(PkInfo.match.match_status, sizeof(PkInfo.match.match_status), "%s", match_status->valuestring);
+            }
 			if (cJSON_IsNumber(serve_player)) {
                 PkInfo.match.serve_player = serve_player->valueint;
             }
@@ -252,8 +270,8 @@ static void on_property_set(const char *msg_id, const char *data, int data_len)
     }
 
     // 调试打印当前比分
-    ESP_LOGI(TAG, "PropertySet done: play_a.name=%s,play_a.score=%d,play_a.player1_name=%s,play_a.player2_name=%s,play_b.name=%s,play_b.score=%d,play_b.player1_name=%s,play_b.player2_name=%s,set=%d,time=%s,date=%s,serve_team=%s,serve_player=%d", 
-             PkInfo.play_a.name,PkInfo.play_a.score,PkInfo.play_a.player1_name,PkInfo.play_a.player2_name,
+    ESP_LOGI(TAG, "PropertySet done:比赛状态：%s,队伍A名字：%s,队伍A得分：%d,队伍A队员1：%s,队伍A队员2：%s,队伍B名字：%s,队伍B得分：%d,队伍B队员1：%s,:队伍B队员2：%s,:当前局数：%d,比赛消耗时间：%s,比赛日期：%s,球权（队伍）：%s,球权（队员）：%d", 
+             PkInfo.match.match_status,PkInfo.play_a.name,PkInfo.play_a.score,PkInfo.play_a.player1_name,PkInfo.play_a.player2_name,
 			 PkInfo.play_b.name,PkInfo.play_b.score,PkInfo.play_b.player1_name,PkInfo.play_b.player2_name,
 			 PkInfo.match.current_set,PkInfo.match.time,PkInfo.match.date,
 			 PkInfo.match.serve_team,PkInfo.match.serve_player
@@ -309,9 +327,12 @@ void sendto_TJC()
 {
 		TJCPrintf("n0.val=%d", PkInfo.play_a.score);
 		TJCPrintf("n1.val=%d", PkInfo.play_b.score);
+		TJCPrintf("n3.val=%d", PkInfo.match.current_set);
 
 		TJCPrintf("t2.txt=\"%s\"", PkInfo.play_a.name);
 		TJCPrintf("t3.txt=\"%s\"", PkInfo.play_b.name);
+		TJCPrintf("t14.txt=\"%s\"", PkInfo.match.match_status);
+
 
 		TJCPrintf("t4.txt=\"%s\"", PkInfo.play_a.player1_name);
 		TJCPrintf("t5.txt=\"%s\"", PkInfo.play_a.player2_name);
@@ -338,12 +359,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    // 设置日志级别（信息过多时上调各模块最低级别）
+    // 设置日志级别：抑制高频重复日志，避免串口超时
     esp_log_level_set("wifi station", CONFIG_LOG_MAXIMUM_LEVEL);
-    esp_log_level_set("onenet", CONFIG_LOG_MAXIMUM_LEVEL);
-    esp_log_level_set("my_mqtt", CONFIG_LOG_MAXIMUM_LEVEL);
-    esp_log_level_set("DAC_MOD", ESP_LOG_WARN);   // DAC 电压渐变信息量过大，仅输出警告
-    esp_log_level_set("ADC", ESP_LOG_INFO);       // ADC 保留 INFO 级别（30s 一次，合理）
+    esp_log_level_set("onenet", ESP_LOG_WARN);         // 仅输出错误，抑制 data handler 中大量 INFO
+    esp_log_level_set("my_mqtt", ESP_LOG_WARN);        // 仅输出错误，抑制心跳/发布确认日志
+    esp_log_level_set("DAC_MOD", ESP_LOG_WARN);        // DAC 电压渐变信息量过大，仅输出警告
+    esp_log_level_set("ADC", ESP_LOG_INFO);            // ADC 保留 INFO 级别（3s 一次，合理）
 
 
     // ==================== WiFi 连接 ====================
